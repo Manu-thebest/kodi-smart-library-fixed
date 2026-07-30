@@ -1,4 +1,4 @@
-import sys, xbmc, xbmcgui, xbmcvfs, os, json, re
+import sys, xbmc, xbmcgui, xbmcvfs, os, json, re, threading
 
 ADDON_DATA   = xbmcvfs.translatePath("special://profile/addon_data/script.context.smartlibrary/")
 LIB_BASE     = os.path.join(ADDON_DATA, "Library/")
@@ -257,12 +257,81 @@ def handle_movie(label, path):
 
 # ── Actualización manual ──────────────────────────────────────────────────────
 
+
+def _get_items_safe(path, timeout=25):
+    """Obtiene items con timeout y filtra solo dicts."""
+    result = []
+    def worker():
+        for media in ("video", "files"):
+            try:
+                req = json.dumps({
+                    "jsonrpc": "2.0", "method": "Files.GetDirectory",
+                    "params": {"directory": path, "media": media,
+                               "properties": ["season", "episode", "title", "file"]},
+                    "id": 1
+                })
+                res = json.loads(xbmc.executeJSONRPC(req))
+                if res.get('error'):
+                    continue
+                items = res.get('result', {}).get('files', [])
+                if isinstance(items, list) and items:
+                    result.extend(it for it in items if isinstance(it, dict))
+                    return
+            except:
+                pass
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(timeout)
+    return result
+
+
+def _force_check():
+    """Comprueba todas las series registradas y recrea .strm faltantes."""
+    meta = load_metadata()
+    new_count = 0
+    removed = meta.get("removed_series", [])
+    active = {s: seas for s, seas in meta.get("tvshows", {}).items() if s not in removed}
+    for show, seasons in active.items():
+        show_dir = os.path.join(TVSHOWS_DIR, show)
+        if not xbmcvfs.exists(show_dir):
+            try:
+                xbmcvfs.mkdirs(show_dir)
+            except:
+                continue
+        for s_str, season_path in seasons.items():
+            if not season_path:
+                continue
+            try:
+                s_num = int(s_str)
+            except:
+                continue
+            episodes = _get_items_safe(season_path)
+            for i, ep in enumerate(episodes):
+                ep_url = ep.get('file', '') or ''
+                if not ep_url:
+                    continue
+                e_num = get_episode_number(ep, i)
+                fname = "%s S%02dE%02d.strm" % (show, s_num, e_num)
+                fpath = os.path.join(show_dir, fname)
+                if not xbmcvfs.exists(fpath):
+                    log("  -> Nuevo: %s" % fname)
+                    try:
+                        with xbmcvfs.File(fpath, 'w') as f:
+                            f.write(ep_url)
+                        new_count += 1
+                    except:
+                        pass
+    if new_count:
+        log("%d ep(s) nuevo(s) creados" % new_count)
+    # Escanear para que Kodi los vea
+    xbmc.executebuiltin("UpdateLibrary(video, %s)" % TVSHOWS_DIR)
+
 def manual_update():
     """Lanza una comprobación de episodios nuevos de forma inmediata."""
-    notify_service()
+    _force_check()
     xbmcgui.Dialog().notification(
         "Smart Library",
-        "Comprobando episodios nuevos...",
+        "Comprobacion completada",
         xbmcgui.NOTIFICATION_INFO, 3000)
 
 

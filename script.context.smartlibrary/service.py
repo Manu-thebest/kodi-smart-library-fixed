@@ -175,7 +175,8 @@ def check_and_update():
             log(f"  T{s_num} path: {season_path[:80]}")
 
             episodes = [ep for ep in get_items(season_path)
-                        if ep.get('filetype') != 'directory'
+                        if isinstance(ep, dict)
+                        and ep.get('filetype') != 'directory'
                         and not is_promo(ep.get('label', ''))]
 
             log(f"  T{s_num}: {len(episodes)} episodio(s) encontrado(s)")
